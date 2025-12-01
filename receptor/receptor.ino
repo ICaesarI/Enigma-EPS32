@@ -1,28 +1,27 @@
-/* RECEPTOR - Lógica Enigma, JSON, y Autenticación */
+/* RECEPTOR - Lógica Enigma, JSON, y Autenticación con Rotores Variables */
 
 #include <Arduino.h>
 #include "BluetoothSerial.h"
-#include <ArduinoJson.h> 
-#include "esp_bt_device.h" 
+#include <ArduinoJson.h>
+#include "esp_bt_device.h"
 
 BluetoothSerial SerialBT;
 
 // =========================================================
 //  CONFIGURACIÓN GLOBAL
 // =========================================================
-// !!! La CLAVE debe ser idéntica a la configurada en el EMISOR.
-const String CLAVE = "CLAVESECRETA"; 
+// !!! CONFIGURACIÓN REQUERIDA !!!
+// La CLAVE debe ser idéntica a la configurada en el EMISOR.
+const String CLAVE = "CLAVESECRETA123"; // <--- REEMPLAZAR
 
 // =========================================================
 //  LÓGICA ENIGMA
 // =========================================================
 String ALFABETO = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
 struct RotorData {
   String wiring;
   char notch;
 };
-
 std::map<String, RotorData> ROTORES = {
   {"I",   {"EKMFLGDQVZNTOWYHXUSPAIBRCJ", 'Q'}},
   {"II",  {"AJDKSIRUXBLHWTMCQGZNPYFVOE", 'E'}},
@@ -30,7 +29,6 @@ std::map<String, RotorData> ROTORES = {
   {"IV",  {"ESOVPZJAYQUIRHXLNFTGKDCMWB", 'J'}},
   {"V",   {"VZBRGITYUPSDNHLXAWMJQOFEKC", 'Z'}}
 };
-
 String REFLECTOR_B = "YRUHQSLDPXNGOKMIEBFZCWVJAT";
 
 String sanitize(String msg) {
@@ -39,53 +37,53 @@ String sanitize(String msg) {
   for (char c : msg) if (c >= 'A' && c <= 'Z') out += c;
   return out;
 }
-
 char rotor_forward(char c, String rotor, int offset) {
   String wiring = ROTORES[rotor].wiring;
   int idx = (ALFABETO.indexOf(c) + offset) % 26;
   return wiring[idx];
 }
-
 char rotor_backward(char c, String rotor, int offset) {
   String wiring = ROTORES[rotor].wiring;
   int idx = wiring.indexOf(c);
   return ALFABETO[(idx - offset + 26) % 26];
 }
-
 char reflector(char c) {
   return REFLECTOR_B[ALFABETO.indexOf(c)];
 }
 
-void step_positions(int &p1, int &p2, int &p3, String r1, String r2, String r3) {
-  char notch1 = ROTORES[r1].notch;
-  char notch2 = ROTORES[r2].notch;
-  bool doble = (p2 == ALFABETO.indexOf(notch2));
-  p1 = (p1 + 1) % 26;
-  if (p1 == ALFABETO.indexOf(notch1) || doble) {
-    p2 = (p2 + 1) % 26;
-    if (p2 == ALFABETO.indexOf(notch2)) p3 = (p3 + 1) % 26;
+void step_positions(int positions[], String rotors[], int numRotors) {
+  bool doblePaso = false;
+  positions[0] = (positions[0] + 1) % 26;
+  for (int i = 0; i < numRotors - 1; i++) {
+    char notch = ROTORES[rotors[i]].notch;
+    if (positions[i] == ALFABETO.indexOf(notch) || doblePaso) {
+      positions[i + 1] = (positions[i + 1] + 1) % 26;
+      doblePaso = (positions[i + 1] == ALFABETO.indexOf(ROTORES[rotors[i + 1]].notch));
+    } else {
+      break;
+    }
   }
 }
 
-String enigma_process(String msg, String r1, String r2, String r3, int p1, int p2, int p3) {
+String enigma_process(String msg, String rotors[], int positions[], int numRotors) {
   String out = "";
   msg = sanitize(msg);
   for (char c : msg) {
-    step_positions(p1, p2, p3, r1, r2, r3);
-    char c1 = rotor_forward(c, r1, p1);
-    char c2 = rotor_forward(c1, r2, p2);
-    char c3 = rotor_forward(c2, r3, p3);
-    char c4 = reflector(c3);
-    char c5 = rotor_backward(c4, r3, p3);
-    char c6 = rotor_backward(c5, r2, p2);
-    char c7 = rotor_backward(c6, r1, p1);
-    out += c7;
+    step_positions(positions, rotors, numRotors);
+    char signal = c;
+    for (int i = 0; i < numRotors; i++) {
+      signal = rotor_forward(signal, rotors[i], positions[i]);
+    }
+    signal = reflector(signal);
+    for (int i = numRotors - 1; i >= 0; i--) {
+      signal = rotor_backward(signal, rotors[i], positions[i]);
+    }
+    out += signal;
   }
   return out;
 }
-
 // =========================================================
-//  SETUP Y LOOP
+//  FUNCIONES AUXILIARES
 // =========================================================
 bool authenticated = false;
 
@@ -96,12 +94,14 @@ String limpiar(String s) {
   return s;
 }
 
+// =========================================================
+//  SETUP Y LOOP
+// =========================================================
+
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("\n###################################");
-  Serial.println("########## RECEPTOR ENIGMA ##########");
-  Serial.println("###################################");
+  Serial.println("=== RECEPTOR ENIGMA (Rotores Variables) ===");
 
   if (!SerialBT.begin("ESP32_Receptor")) {
     Serial.println("Error iniciando Bluetooth");
@@ -116,11 +116,9 @@ void setup() {
   Serial.println("Esperando conexión...");
 }
 
-
 void loop() {
   if (!SerialBT.hasClient()) return;
 
-  // --- Lógica de Autenticación ---
   if (!authenticated) {
     if (SerialBT.available()) {
       String raw = SerialBT.readStringUntil('\n');
@@ -129,7 +127,6 @@ void loop() {
       if (raw.startsWith("AUTH:")) {
         String clave = raw.substring(5);
         clave = limpiar(clave);
-        
         if (clave == CLAVE) {
           authenticated = true;
           Serial.println("AUTENTICACIÓN CORRECTA");
@@ -143,7 +140,6 @@ void loop() {
     return;
   }
 
-  // --- Lógica de Recepción y Descifrado (Solo si está autenticado) ---
   if (SerialBT.available()) {
     String json = SerialBT.readStringUntil('\n');
     json.trim();
@@ -156,20 +152,21 @@ void loop() {
     }
 
     String cifrado = doc["mensaje"].as<String>();
-    String r1 = doc["rotors"][0].as<String>();
-    String r2 = doc["rotors"][1].as<String>();
-    String r3 = doc["rotors"][2].as<String>();
     
-    int p1 = 0, p2 = 0, p3 = 0;
+    int numRotores = doc["numRotores"] | 3; 
+    
+    String rotors[5];
+    int positions[5] = {0, 0, 0, 0, 0}; 
+    
+    JsonArray rotorsArray = doc["rotors"];
+    for (int i = 0; i < numRotores && i < rotorsArray.size(); i++) {
+      rotors[i] = rotorsArray[i].as<String>();
+    }
 
-    String descifrado = enigma_process(cifrado, r1, r2, r3, p1, p2, p3);
+    String descifrado = enigma_process(cifrado, rotors, positions, numRotores);
 
-    Serial.println("\n-----------------------------");
-    Serial.println(" MENSAJE RECIBIDO");
-    Serial.println("-----------------------------");
-    Serial.println("Cifrado: " + cifrado);
+    Serial.println("Recibido cifrado: " + cifrado);
     Serial.println("Descifrado: " + descifrado);
-    Serial.println("-----------------------------");
 
     SerialBT.println(descifrado);
   }

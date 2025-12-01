@@ -1,31 +1,30 @@
-/* EMISOR - Lógica Enigma, JSON, y Autenticación */
+/* EMISOR - Lógica Enigma, JSON, y Autenticación con Rotores Variables */
 
 #include <Arduino.h>
 #include "BluetoothSerial.h"
-#include <ArduinoJson.h> 
-#include "esp_bt_device.h" 
+#include <ArduinoJson.h>
+#include "esp_bt_device.h"
 
 BluetoothSerial SerialBT;
 
 // =========================================================
 //  CONFIGURACIÓN GLOBAL
 // =========================================================
-// !!! Reemplaza esta MAC con la MAC REAL obtenida del módulo ESP32 que actúa como RECEPTOR.
-//Ejemplo = "0x94, 0x51, 0xDC, 0x5B, 0xE0, 0xD2"
-uint8_t receptorMAC[] = {}; 
+// !!! CONFIGURACIÓN REQUERIDA !!!
+// Reemplaza esta MAC con la MAC REAL obtenida del módulo ESP32 que actúa como RECEPTOR.
+// Ejemplo: {0x94, 0x51, 0xDC, 0x5B, 0xE0, 0xD2}
+uint8_t receptorMAC[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}; // <--- REEMPLAZAR
 // La CLAVE debe ser idéntica a la configurada en el RECEPTOR.
-const String CLAVE = "CLAVESECRETA"; 
+const String CLAVE = "CLAVESECRETA123"; // <--- REEMPLAZAR
 
 // =========================================================
 //  LÓGICA ENIGMA
 // =========================================================
 String ALFABETO = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
 struct RotorData {
   String wiring;
   char notch;
 };
-
 std::map<String, RotorData> ROTORES = {
   {"I",   {"EKMFLGDQVZNTOWYHXUSPAIBRCJ", 'Q'}},
   {"II",  {"AJDKSIRUXBLHWTMCQGZNPYFVOE", 'E'}},
@@ -33,7 +32,6 @@ std::map<String, RotorData> ROTORES = {
   {"IV",  {"ESOVPZJAYQUIRHXLNFTGKDCMWB", 'J'}},
   {"V",   {"VZBRGITYUPSDNHLXAWMJQOFEKC", 'Z'}}
 };
-
 String REFLECTOR_B = "YRUHQSLDPXNGOKMIEBFZCWVJAT";
 
 String sanitize(String msg) {
@@ -42,66 +40,94 @@ String sanitize(String msg) {
   for (char c : msg) if (c >= 'A' && c <= 'Z') out += c;
   return out;
 }
-
 char rotor_forward(char c, String rotor, int offset) {
   String wiring = ROTORES[rotor].wiring;
   int idx = (ALFABETO.indexOf(c) + offset) % 26;
   return wiring[idx];
 }
-
 char rotor_backward(char c, String rotor, int offset) {
   String wiring = ROTORES[rotor].wiring;
   int idx = wiring.indexOf(c);
   return ALFABETO[(idx - offset + 26) % 26];
 }
-
 char reflector(char c) {
   return REFLECTOR_B[ALFABETO.indexOf(c)];
 }
 
-void step_positions(int &p1, int &p2, int &p3, String r1, String r2, String r3) {
-  char notch1 = ROTORES[r1].notch;
-  char notch2 = ROTORES[r2].notch;
-  bool doble = (p2 == ALFABETO.indexOf(notch2));
-  p1 = (p1 + 1) % 26;
-  if (p1 == ALFABETO.indexOf(notch1) || doble) {
-    p2 = (p2 + 1) % 26;
-    if (p2 == ALFABETO.indexOf(notch2)) p3 = (p3 + 1) % 26;
+void step_positions(int positions[], String rotors[], int numRotors) {
+  bool doblePaso = false;
+  positions[0] = (positions[0] + 1) % 26;
+  for (int i = 0; i < numRotors - 1; i++) {
+    char notch = ROTORES[rotors[i]].notch;
+    if (positions[i] == ALFABETO.indexOf(notch) || doblePaso) {
+      positions[i + 1] = (positions[i + 1] + 1) % 26;
+      doblePaso = (positions[i + 1] == ALFABETO.indexOf(ROTORES[rotors[i + 1]].notch));
+    } else {
+      break;
+    }
   }
 }
 
-String enigma_process(String msg, String r1, String r2, String r3, int p1, int p2, int p3) {
+String enigma_process(String msg, String rotors[], int positions[], int numRotors) {
   String out = "";
   msg = sanitize(msg);
   for (char c : msg) {
-    step_positions(p1, p2, p3, r1, r2, r3); 
-    char c1 = rotor_forward(c, r1, p1);
-    char c2 = rotor_forward(c1, r2, p2);
-    char c3 = rotor_forward(c2, r3, p3);
-    char c4 = reflector(c3);
-    char c5 = rotor_backward(c4, r3, p3);
-    char c6 = rotor_backward(c5, r2, p2);
-    char c7 = rotor_backward(c6, r1, p1);
-    out += c7;
+    step_positions(positions, rotors, numRotors);
+    char signal = c;
+    // Ida
+    for (int i = 0; i < numRotors; i++) {
+      signal = rotor_forward(signal, rotors[i], positions[i]);
+    }
+    // Reflector
+    signal = reflector(signal);
+    // Vuelta
+    for (int i = numRotors - 1; i >= 0; i--) {
+      signal = rotor_backward(signal, rotors[i], positions[i]);
+    }
+    out += signal;
   }
   return out;
 }
 
 // =========================================================
-//  SETUP Y LOOP
+//  FUNCIONES AUXILIARES
 // =========================================================
 bool authenticated = false;
 
 void waitForSerialInput() {
   while (!Serial.available()) { delay(10); }
 }
+int leerNumero() {
+  while (!Serial.available()) { delay(10); }
+  String input = Serial.readStringUntil('\n');
+  input.trim();
+  return input.toInt();
+}
+String leerTexto() {
+  while (!Serial.available()) { delay(10); }
+  String input = Serial.readStringUntil('\n');
+  input.trim();
+  input.toUpperCase();
+  return input;
+}
+void mostrarRotoresDisponibles() {
+  Serial.println("\n=== ROTORES DISPONIBLES ===");
+  Serial.println("I   - Notch: Q");
+  Serial.println("II  - Notch: E"); 
+  Serial.println("III - Notch: V");
+  Serial.println("IV  - Notch: J");
+  Serial.println("V   - Notch: Z");
+  Serial.println("============================");
+}
+
+// =========================================================
+//  SETUP Y LOOP
+// =========================================================
 
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("\n#################################");
-  Serial.println("########## EMISOR ENIGMA ##########");
-  Serial.println("#################################");
+  Serial.println("=== EMISOR ENIGMA (Rotores Variables) ===");
 
   if (!SerialBT.begin("ESP32_Emisor", true)) {
     Serial.println("Error iniciando Bluetooth");
@@ -111,30 +137,26 @@ void setup() {
 
   const uint8_t* mac = esp_bt_dev_get_address();
   Serial.printf("MAC REAL SPP Emisor = %02X:%02X:%02X:%02X:%02X:%02X\n",
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-  Serial.println("-----------------------------");
-  Serial.println(" PROCESO DE CONEXIÓN Y AUTH");
-  Serial.println("-----------------------------");
   Serial.println("Conectando al receptor (por MAC)...");
-  
   while (!SerialBT.connect(receptorMAC)) {
     Serial.println("Fallo al conectar - reintentando en 2s...");
     delay(2000);
   }
-  Serial.println("✔ Conectado al receptor!");
+  Serial.println("Conectado al receptor!");
 
   Serial.println("Enviando AUTH...");
   SerialBT.println("AUTH:" + CLAVE);
 
   unsigned long t0 = millis();
-  while (millis() - t0 < 3000) { 
+  while (millis() - t0 < 3000) {
     if (SerialBT.available()) {
       String r = SerialBT.readStringUntil('\n');
       r.trim();
       if (r == "AUTH_OK") {
         authenticated = true;
-        Serial.println("✔ Autenticación OK");
+        Serial.println("Autenticación OK");
         break;
       }
     }
@@ -147,7 +169,7 @@ void setup() {
     while (true) delay(1000);
   }
 
-  Serial.println("\nListo. Escribe mensajes para cifrar en el monitor.");
+  Serial.println("Listo. Escribe mensajes para cifrar en el monitor.");
 }
 
 void loop() {
@@ -156,52 +178,92 @@ void loop() {
     return;
   }
 
-  Serial.println("\n=================================");
-  Serial.println("=== INGRESO DE NUEVO MENSAJE ===");
-  Serial.println("=================================");
-  Serial.println("Escribe el mensaje (Enter):");
-  waitForSerialInput();
-  String msg = Serial.readStringUntil('\n');
-  msg.trim();
+  Serial.println("\n=== NUEVO MENSAJE ===");
+  Serial.println("Escribe el mensaje (solo A-Z, se convertirán a mayúsculas):");
+  String msg = leerTexto();
 
-  Serial.println("Rotor 1 (I,II,III,IV,V):");
-  waitForSerialInput(); String r1 = Serial.readStringUntil('\n'); r1.trim();
-  Serial.println("Rotor 2 (I,II,III,IV,V):");
-  waitForSerialInput(); String r2 = Serial.readStringUntil('\n'); r2.trim();
-  Serial.println("Rotor 3 (I,II,III,IV,V):");
-  waitForSerialInput(); String r3 = Serial.readStringUntil('\n'); r3.trim();
+  Serial.println("\n¿Cuántos rotores quieres usar? (3-5):");
+  int numRotores = 0;
+  while (numRotores < 3 || numRotores > 5) {
+    numRotores = leerNumero();
+    if (numRotores < 3 || numRotores > 5) {
+      Serial.println("Error: Debe ser entre 3 y 5. Intenta de nuevo:");
+    }
+  }
 
-  int p1 = 0, p2 = 0, p3 = 0;
+  mostrarRotoresDisponibles();
 
-  String cifrado = enigma_process(msg, r1, r2, r3, p1, p2, p3);
+  String rotors[5]; 
+  int positions[5] = {0, 0, 0, 0, 0}; 
+  
+  Serial.println("\nSelecciona los rotores en orden (de izquierda a derecha):");
+  
+  for (int i = 0; i < numRotores; i++) {
+    Serial.printf("Rotor %d/%d (I,II,III,IV,V): ", i + 1, numRotores);
+    String rotor = leerTexto();
+    
+    while (ROTORES.find(rotor) == ROTORES.end()) {
+      Serial.println("Rotor no válido. Usa I,II,III,IV,V:");
+      rotor = leerTexto();
+    }
+    
+    rotors[i] = rotor;
+  }
+
+  Serial.println("\nConfiguración seleccionada:");
+  Serial.print("Rotores: ");
+  for (int i = 0; i < numRotores; i++) {
+    Serial.print(rotors[i]);
+    if (i < numRotores - 1) Serial.print(" - ");
+  }
+  Serial.println();
+  Serial.print("Posiciones: ");
+  for (int i = 0; i < numRotores; i++) {
+    Serial.print("A");
+    if (i < numRotores - 1) Serial.print(" - ");
+  }
+  Serial.println();
+
+  String cifrado = enigma_process(msg, rotors, positions, numRotores);
+  Serial.println("Mensaje original: " + msg);
   Serial.println("Mensaje cifrado: " + cifrado);
 
   StaticJsonDocument<512> doc;
   doc["mensaje"] = cifrado;
   JsonArray rot = doc.createNestedArray("rotors");
-  rot.add(r1); rot.add(r2); rot.add(r3);
+  for (int i = 0; i < numRotores; i++) {
+    rot.add(rotors[i]);
+  }
   JsonArray pos = doc.createNestedArray("pos");
-  pos.add("A"); pos.add("A"); pos.add("A");
+  for (int i = 0; i < numRotores; i++) {
+    pos.add("A");
+  }
+  doc["numRotores"] = numRotores; 
 
   String json;
   serializeJson(doc, json);
 
   SerialBT.println(json);
-  Serial.println("\nJSON enviado. Esperando respuesta...");
+  Serial.println("JSON enviado. Esperando respuesta...");
 
   unsigned long t0 = millis();
   bool respuestaRecibida = false;
+  
   while (millis() - t0 < 5000) {
     if (SerialBT.available()) {
       String respuesta = SerialBT.readStringUntil('\n');
       respuesta.trim();
-      Serial.println("✔ Respuesta descifrada: " + respuesta);
+      Serial.println("Respuesta descifrada: " + respuesta);
       respuestaRecibida = true;
       break;
     }
     delay(10);
   }
+  
   if (!respuestaRecibida) {
     Serial.println("Timeout - No se recibió respuesta");
   }
+  
+  Serial.println("\nPresiona ENTER para enviar otro mensaje...");
+  waitForSerialInput();
 }
