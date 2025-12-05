@@ -102,6 +102,7 @@ To ensure stability and performance, the Receiver strictly follows this sequence
 The Transmitter includes a robust `loop()` routine to handle connection loss while the Receiver is busy with Wi-Fi:
 
 - If `SerialBT.connected()` is false, the Transmitter attempts a **Persistent Reconnection** and performs a full **Re-Handshake** with the authentication key.
+- **Synchronization Fix:** A forced **3-second delay** is introduced before attempting reconnection to ensure the Receiver has completed the Wi-Fi task and fully reactivated the Bluetooth server service.
 
 ---
 
